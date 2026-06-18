@@ -199,6 +199,7 @@ class VersionManager:
         folder = self._db.get_folder(folder_id)
         return folder["path"] if folder else None
 
+
     def _get_full_path(self, file_rec: dict) -> str:
         """Get full filesystem path from file record."""
         return os.path.join(file_rec["_folder_path"], file_rec["relative_path"])
