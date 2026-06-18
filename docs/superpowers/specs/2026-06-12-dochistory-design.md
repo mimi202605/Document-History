@@ -16,11 +16,12 @@
 - 版本回退 + 导出任意版本
 - 自动清理（按保留天数/最大版本数）
 - 手动创建带备注版本
+- **文件重命名/移动跟踪**（常态场景，重点支持）
+- **另存为跟踪**（常态场景，新文件继承源文件历史）
 
 ### 排除（留后续迭代）
 - doc/wps 文件的 COM 解析（Windows 阶段补全）
 - 增量 delta 存储（完整快照已满足 MVP）
-- 文件重命名/移动跟踪
 - 版本标签功能
 - 批量导出
 - 深色模式（MVP 固定深色主题）
@@ -72,8 +73,8 @@ dochistory/
 
 每个模块单一职责、可独立测试：
 
-- **database.py** — SQLite 封装，所有 SQL 集中于此。对外暴露 `Database` 类，方法包括 `add_folder`、`get_files`、`create_version`、`get_versions`、`rollback_version` 等。内部用 `threading.Lock` 保证线程安全。
-- **file_monitor.py** — 基于 watchdog 的 Observer 模式。监听 `on_modified`，500ms 防抖，过滤临时文件和扩展名。通过 Qt 信号（跨线程安全）通知 UI，不直接操作 widget。
+- **database.py** — SQLite 封装，所有 SQL 集中于此。对外暴露 `Database` 类，方法包括 `add_folder`、`get_files`、`create_version`、`get_versions`、`rollback_version`、`rename_file`（更新 relative_path）、`move_file`（更新 folder_id + relative_path）等。内部用 `threading.Lock` 保证线程安全。
+- **file_monitor.py** — 基于 watchdog 的 Observer 模式。监听 `on_modified`（版本创建）和 `on_moved`（重命名/移动跟踪），500ms 防抖，过滤临时文件和扩展名。通过 Qt 信号（跨线程安全）通知 UI，不直接操作 widget。
 - **document_parser.py** — 抽象基类 `BaseDocumentParser`，定义 `extract_text() -> str` 和 `save_version(file_path, version_path) -> bool` 接口。`DocxParser` 用 python-docx 实现。`Win32DocumentParser` 留空壳，Linux 上调用抛 `NotImplementedError`。
 - **version_manager.py** — 核心业务逻辑。版本创建（哈希去重）、查询、回退（原子替换）、自动清理。协调 database、document_parser、file_utils。
 - **main_window.py** — 方案 B 布局：顶部文件夹下拉 + 搜索框，左侧文件列表，右侧版本时间线 + 操作按钮。
@@ -125,6 +126,36 @@ watchdog 检测到 on_modified
 托盘右键 → 退出 → 停止 Observer → 关闭数据库 → 退出
 ```
 
+### 文件重命名/移动跟踪流
+```
+watchdog 检测到 on_moved(src_path, dest_path)
+  → 过滤：dest_path 扩展名是否为 .docx？是否临时文件？
+  → 判断 src_path 是否在数据库中（已知文件重命名）
+    → 是：更新 files.relative_path（同文件夹内重命名）
+    → 或更新 folder_id + relative_path（跨监控文件夹移动）
+    → 记录一条特殊版本（note="重命名: 旧名.docx → 新名.docx"，is_auto=1）
+    → 发信号通知 UI 刷新文件列表
+  → 判断 dest_path 是否在监控范围内但 src_path 不在数据库中
+    → 外部文件移入：作为新文件处理，创建首个版本
+  → 判断 src_path 在数据库中但 dest_path 不在监控范围内
+    → 文件移出监控：标记 files.is_active=0（保留历史，UI 显示"已移出"）
+```
+
+### 另存为跟踪流
+```
+场景：用户在 Word 中"另存为"新文件名，原文件保留不变
+watchdog 检测到 on_created(dest_path)（新文件出现）
+  → 过滤：扩展名为 .docx？非临时文件？
+  → 判断 dest_path 是否在监控范围内
+    → 是：作为新文件处理，创建首个版本
+  → 关键：另存为产生的新文件，其内容与源文件在另存那一刻完全相同
+  → 用户可在 UI 中手动"关联历史"：选择源文件，将源文件的历史版本复制到新文件
+    → 新文件继承源文件另存前的全部历史，并追加首个独立版本（note="另存为: 源文件.docx"）
+    → 源文件历史保留不变，两个文件从此独立演化
+  → 自动检测（可选增强）：新文件首个版本的哈希与某现有文件某版本哈希匹配时
+    → UI 提示"检测到可能从 X.docx 另存而来，是否继承历史？"
+```
+
 ## 五、数据库设计
 
 ### 表结构
@@ -144,6 +175,7 @@ CREATE TABLE files (
     relative_path TEXT NOT NULL,
     file_hash TEXT NOT NULL,
     last_modified TIMESTAMP NOT NULL,
+    is_active INTEGER DEFAULT 1, -- 0:已删除或移出监控, 1:正常
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (folder_id) REFERENCES monitored_folders(id),
     UNIQUE(folder_id, relative_path)
@@ -191,6 +223,14 @@ INSERT INTO config (key, value) VALUES
 - 监控的文件被外部删除 → 数据库保留历史版本，文件列表标记"已删除"，仍可回退/导出
 - 文件被占用无法读取（Word 打开中）→ 重试 3 次（间隔 200ms），仍失败则跳过本次版本记录，记日志，下次保存再试
 - 监控文件夹被删除/重命名 → 标记 `monitored_folders.is_active=0`，UI 显示"不可用"，不崩溃
+- 文件重命名（同文件夹内）→ `on_moved` 触发，更新 `files.relative_path`，记录重命名版本，历史版本连续不断
+- 文件移动（跨监控文件夹）→ 更新 `folder_id` + `relative_path`，历史版本保留
+- 文件移出监控范围 → 标记 `files.is_active=0`，UI 显示"已移出"，历史可回退/导出
+- 文件移入监控范围 → 作为新文件处理，创建首个版本
+- 快速连续重命名（用户反复改名）→ 防抖 500ms，只记录最终文件名
+- 另存为（原文件保留 + 新文件创建）→ 新文件作为独立文件创建首个版本；用户可手动"关联历史"继承源文件历史；哈希匹配时自动提示关联
+- 另存为后源文件继续编辑 → 两个文件独立演化，各自记录版本
+- 另存为的新文件名与已删除文件重名 → 作为新文件处理，不复活旧记录（旧记录 is_active=0 保留）
 
 ### 数据完整性
 - 版本写入用数据库事务，失败则回滚，不留半截记录
@@ -265,6 +305,8 @@ INSERT INTO config (key, value) VALUES
 ### 集成测试
 - `test_file_monitor.py` — 真实创建/修改 docx 文件，验证防抖、过滤、版本记录触发。用 `tmp_path` fixture 隔离
 - `test_rollback_flow.py` — 完整流程：创建多版本 → 回退到旧版 → 验证文件内容一致 → 验证自动备份生成
+- `test_rename_move.py` — 重命名/移动跟踪：同文件夹重命名、跨文件夹移动、移出监控、移入监控、快速连续重命名防抖
+- `test_save_as.py` — 另存为跟踪：新文件创建首个版本、手动关联历史继承、哈希匹配自动提示、源文件独立演化
 
 ### GUI 测试
 - MVP 不做自动化 GUI 测试（PyQt6 测试复杂度高，收益低）
@@ -289,7 +331,9 @@ pytest tests/ -v
 ### 第2阶段：核心版本管理
 1. 实现文档解析模块（document_parser.py，先做 DocxParser）
 2. 实现版本创建/查询功能（version_manager.py）
-3. 测试自动版本记录
+3. 实现文件重命名/移动跟踪（file_monitor.py 的 on_moved + database 的 rename/move）
+4. 实现另存为跟踪（on_created + 哈希匹配关联历史 + 手动关联）
+5. 测试自动版本记录、重命名跟踪与另存为跟踪
 
 ### 第3阶段：GUI 界面
 1. 创建 PyQt6 主窗口（方案 B 布局）
@@ -320,3 +364,5 @@ pytest tests/ -v
 | 差异展示 | 文本行级 diff | 实现简单，difflib 内置，对段落级差异足够直观 |
 | doc/wps 处理 | Linux 留空壳，Windows 补全 | 跨平台开发约束，接口预留 |
 | GUI 测试 | 手动测试 | PyQt6 自动化测试复杂度高，MVP 阶段收益低 |
+| 文件重命名/移动 | MVP 必需，on_moved 事件跟踪 | 用户明确表示重命名是常态，历史版本必须连续不断 |
+| 另存为跟踪 | MVP 必需，on_created + 哈希匹配 | 用户明确表示另存为是常态，新文件应可继承源文件历史 |
