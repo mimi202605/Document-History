@@ -140,6 +140,32 @@ class TestFileMonitor:
         _wait(1.5)
         assert len(events) > 0
 
+    def test_pause_during_debounce_does_not_lose_event(self, monitor, temp_monitor_dir):
+        events = []
+        monitor.file_saved.connect(lambda p: events.append(p))
+
+        monitor.add_watch(str(temp_monitor_dir))
+        docx_path = temp_monitor_dir / "test.docx"
+        Document().save(str(docx_path))
+
+        # 在 0.5s 防抖窗口内立即暂停监控
+        monitor.pause()
+
+        # 等待 2 秒，让定时器触发几次，每次都因暂停而重新调度
+        _wait(2.0)
+
+        # 暂停期间不应发射信号
+        assert len(events) == 0
+
+        # 恢复监控
+        monitor.resume()
+
+        # 等待 2 秒，让重新调度的定时器在恢复后触发
+        _wait(2.0)
+
+        # 验证保存事件未被丢弃
+        assert any("test.docx" in e for e in events)
+
     def test_remove_watch(self, monitor, temp_monitor_dir):
         events = []
         monitor.file_saved.connect(lambda p: events.append(p))

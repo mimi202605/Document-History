@@ -46,10 +46,28 @@ class TestWin32DocumentParser:
         with pytest.raises(NotImplementedError):
             parser.extract_text("/path/to/file.doc")
 
-    def test_get_snapshot_raises_not_implemented(self):
+    def test_win32_parser_get_snapshot_reads_bytes(self, tmp_path):
+        # get_snapshot 仅读取原始字节，在非 Windows 平台也应正常工作
+        path = tmp_path / "test.doc"
+        content = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1fake doc binary content"
+        path.write_bytes(content)
         parser = Win32DocumentParser()
-        with pytest.raises(NotImplementedError):
-            parser.get_snapshot("/path/to/file.doc")
+        snapshot = parser.get_snapshot(str(path))
+        assert snapshot == content
+
+    def test_win32_parser_get_snapshot_on_wps_file(self, tmp_path):
+        # .wps 文件同样应能读取原始字节
+        path = tmp_path / "test.wps"
+        content = b"wps file binary content"
+        path.write_bytes(content)
+        parser = Win32DocumentParser()
+        snapshot = parser.get_snapshot(str(path))
+        assert snapshot == content
+
+    def test_get_parser_for_doc_returns_win32_parser(self):
+        # 验证 .doc 文件返回 Win32DocumentParser 实例
+        parser = get_parser_for_file("test.doc")
+        assert isinstance(parser, Win32DocumentParser)
 
 
 class TestGetParserForFile:

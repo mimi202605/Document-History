@@ -81,6 +81,8 @@ class _DebouncedHandler(FileSystemEventHandler):
         with self._timers_lock:
             self._timers.pop(file_path, None)
         if self._monitor._paused:
+            # 暂停期间不丢弃事件，重新调度定时器以便恢复后重试
+            self._debounce(file_path)
             return
         self._monitor.file_saved.emit(file_path)
 

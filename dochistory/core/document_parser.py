@@ -34,7 +34,8 @@ class DocxParser(BaseDocumentParser):
 class Win32DocumentParser(BaseDocumentParser):
     """Parser for .doc and .wps files using pywin32 COM interface.
 
-    On non-Windows platforms, all methods raise NotImplementedError.
+    On non-Windows platforms, extract_text raises NotImplementedError.
+    get_snapshot only reads raw bytes and works on all platforms.
     """
 
     def extract_text(self, file_path: str) -> str:
@@ -55,12 +56,7 @@ class Win32DocumentParser(BaseDocumentParser):
             word.Quit()
 
     def get_snapshot(self, file_path: str) -> bytes:
-        try:
-            import win32com.client  # noqa: F401
-        except ImportError:
-            raise NotImplementedError(
-                "doc/wps support requires Windows with Microsoft Word or WPS Office installed"
-            )
+        # get_snapshot 仅读取原始字节，不需要 win32com，所有平台均可执行
         with open(file_path, "rb") as f:
             return f.read()
 
