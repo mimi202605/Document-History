@@ -122,6 +122,15 @@ class Database:
                 )
             return [dict(row) for row in cursor.fetchall()]
 
+    def get_folder(self, folder_id: int) -> Optional[dict]:
+        """Get a single folder by ID."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM monitored_folders WHERE id = ?", (folder_id,)
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
     def deactivate_folder(self, folder_id: int):
         with self._lock:
             self._conn.execute(

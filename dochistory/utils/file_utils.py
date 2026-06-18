@@ -9,9 +9,10 @@ SUPPORTED_EXTENSIONS = {".docx", ".doc", ".wps"}
 
 # Patterns for temporary/lock files created by Word/WPS
 TEMP_PATTERNS = [
-    re.compile(r"^~\$"),           # Word temp: ~$file.docx
-    re.compile(r"^\.~lock\."),     # LibreOffice lock: .~lock.file.docx#
+    re.compile(r"^~"),             # Word temp: ~$file.docx, ~WRD0001, ~DFTxxxx
+    re.compile(r"^\.~"),           # LibreOffice lock: .~lock.file.docx#
     re.compile(r"\.tmp$", re.IGNORECASE),  # .tmp extension
+    re.compile(r"\.bak$", re.IGNORECASE),  # .bak backup files
 ]
 
 
