@@ -241,6 +241,14 @@ class Database:
             row = cursor.fetchone()
             return row["data"] if row else None
 
+    def set_version_note(self, version_id: int, note: str):
+        with self._lock:
+            self._conn.execute(
+                "UPDATE versions SET note = ? WHERE id = ?",
+                (note, version_id),
+            )
+            self._conn.commit()
+
     def get_latest_version_number(self, file_id: int) -> int:
         with self._lock:
             cursor = self._conn.execute(
