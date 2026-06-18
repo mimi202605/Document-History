@@ -35,7 +35,10 @@ class VersionManager:
         if is_temp_file(file_path) or not is_supported_file(file_path):
             return None
 
-        relative_path = os.path.basename(file_path)
+        folder_path = self._get_folder_path(folder_id)
+        if folder_path is None:
+            return None
+        relative_path = os.path.relpath(file_path, folder_path)
         file_hash = compute_md5(file_path)
 
         # Find or create file record
@@ -191,6 +194,11 @@ class VersionManager:
                     return {**f, "_folder_path": folder["path"]}
         return None
 
+    def _get_folder_path(self, folder_id: int) -> Optional[str]:
+        """Get folder filesystem path by folder ID."""
+        folder = self._db.get_folder(folder_id)
+        return folder["path"] if folder else None
+
     def _get_full_path(self, file_rec: dict) -> str:
         """Get full filesystem path from file record."""
         return os.path.join(file_rec["_folder_path"], file_rec["relative_path"])
@@ -199,32 +207,44 @@ class VersionManager:
 
     def handle_rename(self, old_path: str, new_path: str, folder_id: int):
         """Handle file rename within the same monitored folder."""
-        old_name = os.path.basename(old_path)
-        new_name = os.path.basename(new_path)
-        file_rec = self._db.find_file(folder_id, old_name)
+        folder_path = self._get_folder_path(folder_id)
+        if folder_path is None:
+            return
+        old_rel = os.path.relpath(old_path, folder_path)
+        new_rel = os.path.relpath(new_path, folder_path)
+        file_rec = self._db.find_file(folder_id, old_rel)
         if file_rec is None:
             return
-        self._db.rename_file(file_rec["id"], new_name)
+        self._db.rename_file(file_rec["id"], new_rel)
         # Record a special version noting the rename
-        self._record_rename_version(file_rec["id"], old_name, new_name)
+        self._record_rename_version(file_rec["id"], old_rel, new_rel)
 
     def handle_move(self, old_path: str, new_path: str, old_folder_id: int, new_folder_id: int):
         """Handle file move between monitored folders."""
-        relative_name = os.path.basename(new_path)
-        file_rec = self._db.find_file(old_folder_id, relative_name)
+        old_folder_path = self._get_folder_path(old_folder_id)
+        new_folder_path = self._get_folder_path(new_folder_id)
+        if old_folder_path is None or new_folder_path is None:
+            return
+        new_rel = os.path.relpath(new_path, new_folder_path)
+        old_rel = os.path.relpath(old_path, old_folder_path)
+        file_rec = self._db.find_file(old_folder_id, old_rel)
         if file_rec is None:
-            # Try old name
-            old_name = os.path.basename(old_path)
-            file_rec = self._db.find_file(old_folder_id, old_name)
+            # Try basename fallback
+            file_rec = self._db.find_file(old_folder_id, os.path.basename(old_path))
         if file_rec is None:
             return
-        self._db.move_file(file_rec["id"], new_folder_id, relative_name)
-        self._record_rename_version(file_rec["id"], os.path.basename(old_path), relative_name)
+        self._db.move_file(file_rec["id"], new_folder_id, new_rel)
+        self._record_rename_version(file_rec["id"], old_rel, new_rel)
 
     def handle_move_out(self, old_path: str, folder_id: int):
         """Handle file moved out of monitored folders."""
-        old_name = os.path.basename(old_path)
-        file_rec = self._db.find_file(folder_id, old_name)
+        folder_path = self._get_folder_path(folder_id)
+        if folder_path is None:
+            return
+        old_rel = os.path.relpath(old_path, folder_path)
+        file_rec = self._db.find_file(folder_id, old_rel)
+        if file_rec is None:
+            file_rec = self._db.find_file(folder_id, os.path.basename(old_path))
         if file_rec is None:
             return
         self._db.deactivate_file(file_rec["id"])

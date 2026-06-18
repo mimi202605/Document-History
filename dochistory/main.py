@@ -51,12 +51,41 @@ class DocHistoryApp:
         folders = self._db.get_folders()
         for f in folders:
             self._monitor.add_watch(f["path"])
+        # Initial scan: create versions for all existing files (recursive)
+        self._initial_scan(folders)
+
+    def _initial_scan(self, folders):
+        """Scan existing files in monitored folders and create initial versions."""
+        for f in folders:
+            folder_path = f["path"]
+            if not os.path.isdir(folder_path):
+                continue
+            for root, dirs, files in os.walk(folder_path):
+                for filename in files:
+                    file_path = os.path.join(root, filename)
+                    if is_temp_file(file_path) or not is_supported_file(file_path):
+                        continue
+                    try:
+                        self._vm.create_version(file_path, f["id"])
+                    except Exception:
+                        pass  # Skip files that can't be read
+        self._window.refresh()
+
+    def _get_folder_path(self, folder_id: int):
+        """Get folder path by ID from database."""
+        folder = self._db.get_folder(folder_id)
+        return folder["path"] if folder else None
 
     def _find_folder_id_for_path(self, file_path: str):
         """Find which monitored folder a file belongs to."""
         folders = self._db.get_folders()
+        norm_file = os.path.normpath(file_path)
         for f in folders:
-            if file_path.startswith(f["path"]):
+            folder_path = os.path.normpath(f["path"])
+            # Ensure folder is a proper parent directory (not just a prefix)
+            if norm_file == folder_path:
+                continue
+            if norm_file.startswith(folder_path + os.sep):
                 return f["id"]
         return None
 
@@ -69,11 +98,27 @@ class DocHistoryApp:
             self._window.refresh()
 
     def _on_file_moved(self, src_path: str, dest_path: str):
+        # Word/WPS atomic save: temp file renamed to original filename.
+        # The file_monitor already handles standard temp files, but if a
+        # non-standard temp name slips through, check if source is tracked.
+        if is_temp_file(src_path):
+            self._on_file_saved(dest_path)
+            return
+
         old_folder_id = self._find_folder_id_for_path(src_path)
         new_folder_id = self._find_folder_id_for_path(dest_path)
 
         if old_folder_id and new_folder_id:
             if old_folder_id == new_folder_id:
+                # Check if source is actually a tracked file
+                folder_path = self._get_folder_path(old_folder_id)
+                if folder_path:
+                    old_rel = os.path.relpath(src_path, folder_path)
+                    file_rec = self._db.find_file(old_folder_id, old_rel)
+                    if file_rec is None:
+                        # Source not tracked → likely atomic save with non-standard temp
+                        self._on_file_saved(dest_path)
+                        return
                 self._vm.handle_rename(src_path, dest_path, old_folder_id)
             else:
                 self._vm.handle_move(src_path, dest_path, old_folder_id, new_folder_id)
@@ -107,8 +152,17 @@ class DocHistoryApp:
         folder_id = self._find_folder_id_for_path(file_path)
         if folder_id is None:
             return
-        relative_path = os.path.basename(file_path)
+        # Safety check: don't deactivate if file still exists
+        # (file_monitor debounce should handle this, but double-check)
+        if os.path.exists(file_path):
+            return
+        folder_path = self._get_folder_path(folder_id)
+        if folder_path is None:
+            return
+        relative_path = os.path.relpath(file_path, folder_path)
         file_rec = self._db.find_file(folder_id, relative_path)
+        if file_rec is None:
+            file_rec = self._db.find_file(folder_id, os.path.basename(file_path))
         if file_rec:
             self._db.deactivate_file(file_rec["id"])
             self._window.refresh()

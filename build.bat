@@ -1,57 +1,56 @@
 @echo off
-chcp 65001 >nul
 echo ============================================
-echo   DocHistory Windows 打包脚本
+echo   DocHistory Windows Build Script
 echo ============================================
 echo.
 
-REM 检查Python环境
+REM Check Python environment
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo [错误] 未找到Python，请先安装Python 3.10+
+    echo [ERROR] Python not found. Please install Python 3.10+
     pause
     exit /b 1
 )
 
-REM 安装依赖
-echo [1/4] 安装项目依赖...
+REM Install dependencies
+echo [1/4] Installing project dependencies...
 pip install -r requirements.txt
 if errorlevel 1 (
-    echo [错误] 依赖安装失败
+    echo [ERROR] Failed to install dependencies
     pause
     exit /b 1
 )
 
-REM 安装PyInstaller
-echo [2/4] 安装PyInstaller打包工具...
+REM Install PyInstaller
+echo [2/4] Installing PyInstaller...
 pip install pyinstaller
 if errorlevel 1 (
-    echo [错误] PyInstaller安装失败
+    echo [ERROR] Failed to install PyInstaller
     pause
     exit /b 1
 )
 
-REM 清理旧的构建文件
-echo [3/4] 清理旧的构建文件...
+REM Clean old build files
+echo [3/4] Cleaning old build files...
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
 
-REM 执行打包
-echo [4/4] 开始打包生成exe文件...
-pyinstaller DocHistory.spec --clean --noconfirm
+REM Build executable
+echo [4/4] Building executable...
+python -m PyInstaller DocHistory.spec --clean --noconfirm
 if errorlevel 1 (
-    echo [错误] 打包失败
+    echo [ERROR] Build failed
     pause
     exit /b 1
 )
 
 echo.
 echo ============================================
-echo   打包成功！
+echo   Build Successful!
 echo ============================================
 echo.
-echo 可执行文件位于: dist\DocHistory.exe
+echo Executable: dist\DocHistory.exe
 echo.
-echo 使用方法: 双击 dist\DocHistory.exe 即可运行
+echo Usage: Double-click dist\DocHistory.exe to run
 echo.
 pause

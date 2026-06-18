@@ -1,4 +1,5 @@
 """File system monitor using watchdog with debounce."""
+import os
 import threading
 
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -15,6 +16,8 @@ class _DebouncedHandler(FileSystemEventHandler):
         self._monitor = monitor
         self._timers: dict[str, threading.Timer] = {}
         self._timers_lock = threading.Lock()
+        self._delete_timers: dict[str, threading.Timer] = {}
+        self._delete_timers_lock = threading.Lock()
 
     def on_modified(self, event):
         if event.is_directory:
@@ -45,6 +48,11 @@ class _DebouncedHandler(FileSystemEventHandler):
             return
         if self._monitor._paused:
             return
+        # Word/WPS atomic save: temp file renamed to original filename.
+        # Treat as a save event for the destination, not a rename.
+        if is_temp_file(src_path):
+            self._debounce(dest_path)
+            return
         self._monitor.file_moved.emit(src_path, dest_path)
 
     def on_deleted(self, event):
@@ -55,7 +63,10 @@ class _DebouncedHandler(FileSystemEventHandler):
             return
         if self._monitor._paused:
             return
-        self._monitor.file_deleted.emit(file_path)
+        # Debounce deletion: Word's atomic save deletes the original then
+        # recreates it via rename. If the file reappears within the window,
+        # cancel the deletion notification.
+        self._debounce_delete(file_path)
 
     def _debounce(self, file_path: str):
         """Debounce: 500ms window, only last modification triggers."""
@@ -73,11 +84,34 @@ class _DebouncedHandler(FileSystemEventHandler):
             return
         self._monitor.file_saved.emit(file_path)
 
+    def _debounce_delete(self, file_path: str):
+        """Debounce deletion: wait 1s, cancel if file reappears (atomic save)."""
+        with self._delete_timers_lock:
+            if file_path in self._delete_timers:
+                self._delete_timers[file_path].cancel()
+            timer = threading.Timer(1.0, self._emit_delete, args=[file_path])
+            self._delete_timers[file_path] = timer
+        timer.start()
+
+    def _emit_delete(self, file_path: str):
+        with self._delete_timers_lock:
+            self._delete_timers.pop(file_path, None)
+        if self._monitor._paused:
+            return
+        # Only emit if file is truly gone (not recreated by atomic save)
+        if os.path.exists(file_path):
+            return
+        self._monitor.file_deleted.emit(file_path)
+
     def cancel_all(self):
         with self._timers_lock:
             for timer in self._timers.values():
                 timer.cancel()
             self._timers.clear()
+        with self._delete_timers_lock:
+            for timer in self._delete_timers.values():
+                timer.cancel()
+            self._delete_timers.clear()
 
 
 class FileMonitor(QObject):
