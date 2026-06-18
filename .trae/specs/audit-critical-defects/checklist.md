@@ -1,0 +1,12 @@
+- [x] file_monitor.py 删除防抖机制在 Word 原子保存场景下不会导致误删
+- [x] file_monitor.py 防抖 Timer 操作无竞态条件导致信号丢失或重复
+- [x] version_manager.py os.path.relpath 替代 os.path.basename 后数据完整性不受影响
+- [x] version_manager.py basename 回退不会在子目录场景下匹配错误文件记录
+- [x] main.py _on_file_moved 原子保存处理链完整，无遗漏或重复处理
+- [x] main.py _on_file_deleted 安全检查（os.path.exists）有效防止误标记
+- [x] main.py _find_folder_id_for_path normpath 匹配无前缀误匹配
+- [x] main.py _initial_scan 不会创建重复版本
+- [x] file_utils.py 扩展的临时文件模式不会误过滤合法用户文档
+- [x] database.py get_folder 方法与现有 UNIQUE 约束一致
+- [x] UI 层与核心层交互在合并后代码下正确
+- [x] 现有测试用例在合并后代码下仍能正确运行
