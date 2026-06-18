@@ -37,7 +37,7 @@ if exist dist rmdir /s /q dist
 
 REM Build executable
 echo [4/4] Building executable...
-pyinstaller DocHistory.spec --clean --noconfirm
+python -m PyInstaller DocHistory.spec --clean --noconfirm
 if errorlevel 1 (
     echo [ERROR] Build failed
     pause
