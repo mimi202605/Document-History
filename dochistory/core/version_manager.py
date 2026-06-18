@@ -194,3 +194,97 @@ class VersionManager:
     def _get_full_path(self, file_rec: dict) -> str:
         """Get full filesystem path from file record."""
         return os.path.join(file_rec["_folder_path"], file_rec["relative_path"])
+
+    # --- Rename / Move / Save As tracking ---
+
+    def handle_rename(self, old_path: str, new_path: str, folder_id: int):
+        """Handle file rename within the same monitored folder."""
+        old_name = os.path.basename(old_path)
+        new_name = os.path.basename(new_path)
+        file_rec = self._db.find_file(folder_id, old_name)
+        if file_rec is None:
+            return
+        self._db.rename_file(file_rec["id"], new_name)
+        # Record a special version noting the rename
+        self._record_rename_version(file_rec["id"], old_name, new_name)
+
+    def handle_move(self, old_path: str, new_path: str, old_folder_id: int, new_folder_id: int):
+        """Handle file move between monitored folders."""
+        relative_name = os.path.basename(new_path)
+        file_rec = self._db.find_file(old_folder_id, relative_name)
+        if file_rec is None:
+            # Try old name
+            old_name = os.path.basename(old_path)
+            file_rec = self._db.find_file(old_folder_id, old_name)
+        if file_rec is None:
+            return
+        self._db.move_file(file_rec["id"], new_folder_id, relative_name)
+        self._record_rename_version(file_rec["id"], os.path.basename(old_path), relative_name)
+
+    def handle_move_out(self, old_path: str, folder_id: int):
+        """Handle file moved out of monitored folders."""
+        old_name = os.path.basename(old_path)
+        file_rec = self._db.find_file(folder_id, old_name)
+        if file_rec is None:
+            return
+        self._db.deactivate_file(file_rec["id"])
+
+    def handle_save_as(self, new_file_path: str, folder_id: int) -> Optional[dict]:
+        """Handle a new file created via 'Save As'. Creates first version.
+        Returns the version record, or None if creation failed."""
+        return self.create_version(new_file_path, folder_id, note="另存为新文件", is_auto=True)
+
+    def find_save_as_source(self, new_file_path: str) -> Optional[dict]:
+        """Check if a new file's hash matches any existing file version.
+        Returns the source file record if a match is found."""
+        if not os.path.exists(new_file_path):
+            return None
+        new_hash = compute_md5(new_file_path)
+        return self._db.find_file_by_hash(new_hash)
+
+    def associate_history(self, new_file_id: int, source_file_id: int):
+        """Copy all versions from source file to new file (for Save As inheritance)."""
+        source_versions = self._db.get_versions(source_file_id)
+        # Get current latest version number of new file
+        current_max = self._db.get_latest_version_number(new_file_id)
+        for i, sv in enumerate(reversed(source_versions)):
+            data = self._db.get_version_data(sv["id"])
+            if data is None:
+                continue
+            version_num = current_max + i + 1
+            note = f"继承自源文件 (原版本 v{sv['version_number']})"
+            if i == len(source_versions) - 1:
+                note = "另存为: 继承源文件历史"
+            self._db.create_version(
+                file_id=new_file_id,
+                version_number=version_num,
+                file_size=sv["file_size"],
+                data=data,
+                note=note,
+                is_auto=True,
+                modified_by=sv.get("modified_by"),
+            )
+
+    def _record_rename_version(self, file_id: int, old_name: str, new_name: str):
+        """Record a special version entry for rename events."""
+        version_number = self._db.get_latest_version_number(file_id) + 1
+        # Use empty data placeholder (rename doesn't change content)
+        # Store current snapshot if file exists
+        file_rec = self._get_file_record(file_id)
+        if file_rec and os.path.exists(self._get_full_path(file_rec)):
+            snapshot = self._read_with_retry(self._get_full_path(file_rec))
+            if snapshot:
+                data = compress_data(snapshot)
+            else:
+                data = b""
+        else:
+            data = b""
+        self._db.create_version(
+            file_id=file_id,
+            version_number=version_number,
+            file_size=0,
+            data=data,
+            note=f"重命名: {old_name} → {new_name}",
+            is_auto=True,
+            modified_by=getpass.getuser(),
+        )
