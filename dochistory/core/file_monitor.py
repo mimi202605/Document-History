@@ -103,7 +103,6 @@ class _DebouncedHandler(FileSystemEventHandler):
             return
         self._monitor.file_deleted.emit(file_path)
 
-
     def cancel_all(self):
         with self._timers_lock:
             for timer in self._timers.values():

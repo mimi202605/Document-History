@@ -76,7 +76,6 @@ class DocHistoryApp:
         folder = self._db.get_folder(folder_id)
         return folder["path"] if folder else None
 
-
     def _find_folder_id_for_path(self, file_path: str):
         """Find which monitored folder a file belongs to."""
         folders = self._db.get_folders()
@@ -105,7 +104,6 @@ class DocHistoryApp:
         if is_temp_file(src_path):
             self._on_file_saved(dest_path)
             return
-
 
         old_folder_id = self._find_folder_id_for_path(src_path)
         new_folder_id = self._find_folder_id_for_path(dest_path)
