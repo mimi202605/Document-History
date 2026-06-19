@@ -158,3 +158,84 @@ class TestCleanup:
         manager.cleanup_old_versions(file_rec["id"], max_versions=3)
         versions = manager.get_versions(file_rec["id"])
         assert len(versions) == 3
+
+
+class TestCreateVersionReadFailure:
+    """缺陷1: create_version 在读取快照前提交哈希，读取失败导致数据丢失。"""
+
+    def test_hash_not_updated_when_read_fails(self, vm, monitored_file, monkeypatch):
+        manager, db = vm
+        monitor_dir, folder_id, docx_path = monitored_file
+
+        # 创建初始版本 v1
+        manager.create_version(str(docx_path), folder_id)
+        file_rec = db.find_file(folder_id, "report.docx")
+        old_hash = file_rec["file_hash"]
+
+        # 修改文件内容（产生新哈希）
+        doc = Document(str(docx_path))
+        doc.add_paragraph("Modified content")
+        doc.save(str(docx_path))
+
+        # mock _read_with_retry 返回 None 模拟读取失败
+        monkeypatch.setattr(manager, "_read_with_retry", lambda *args, **kwargs: None)
+
+        # 调用 create_version 应返回 None
+        result = manager.create_version(str(docx_path), folder_id)
+        assert result is None
+
+        # 验证数据库中 file_hash 仍为旧哈希（未被提前提交）
+        file_rec_after = db.find_file(folder_id, "report.docx")
+        assert file_rec_after["file_hash"] == old_hash
+
+        # 取消 mock，再次调用 create_version 应成功创建版本
+        # 证明哈希未被提前提交，状态未被永久跳过
+        monkeypatch.undo()
+        result = manager.create_version(str(docx_path), folder_id)
+        assert result is not None
+        assert result["version_number"] == 2
+
+
+class TestRenameVersionUnreadable:
+    """缺陷2: _record_rename_version 存储 b""（未压缩），回滚/导出时崩溃。"""
+
+    def test_rename_version_with_unreadable_file_rollback_succeeds(
+        self, vm, monitored_file, tmp_path, monkeypatch
+    ):
+        manager, db = vm
+        monitor_dir, folder_id, docx_path = monitored_file
+
+        # 创建初始版本
+        manager.create_version(str(docx_path), folder_id)
+        file_rec = db.find_file(folder_id, "report.docx")
+        file_id = file_rec["id"]
+
+        # 在磁盘上重命名文件，使 handle_rename 后新路径仍存在
+        new_path = monitor_dir / "report_renamed.docx"
+        os.rename(str(docx_path), str(new_path))
+
+        # mock _read_with_retry 返回 None 模拟文件不可读
+        monkeypatch.setattr(manager, "_read_with_retry", lambda *args, **kwargs: None)
+
+        # 调用 handle_rename 触发 _record_rename_version
+        manager.handle_rename(str(docx_path), str(new_path), folder_id)
+
+        # 获取版本列表，找到 note 包含"重命名"的版本
+        versions = db.get_versions(file_id)
+        rename_version = None
+        for v in versions:
+            if v["note"] and "重命名" in v["note"]:
+                rename_version = v
+                break
+        assert rename_version is not None
+
+        # 验证 export_version 不崩溃，导出文件内容为空
+        export_path = tmp_path / "exported_rename.docx"
+        result = manager.export_version(file_id, rename_version["id"], str(export_path))
+        assert result is True
+        assert export_path.exists()
+        assert export_path.read_bytes() == b""
+
+        # 取消 mock，验证 rollback_to_version 到该重命名版本不崩溃
+        monkeypatch.undo()
+        manager.rollback_to_version(file_id, rename_version["id"])

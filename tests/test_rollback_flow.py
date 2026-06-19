@@ -90,3 +90,36 @@ class TestRollbackFlow:
         texts = [p.text for p in doc.paragraphs]
         assert "Version 1" in texts
         assert "Version 2" not in texts
+
+
+class TestRollbackAtomicity:
+    """缺陷3: rollback_to_version 在原子写入前创建备份，写入失败导致备份残留。"""
+
+    def test_no_backup_residue_when_write_fails(self, setup, monkeypatch):
+        manager, db, monitor_dir, folder_id, docx_path, versions = setup
+        v1, v2, v3 = versions
+        file_rec = db.find_file(folder_id, "report.docx")
+        file_id = file_rec["id"]
+
+        versions_before = len(db.get_versions(file_id))
+
+        # mock _atomic_write 抛出 PermissionError 模拟写入失败
+        monkeypatch.setattr(
+            manager,
+            "_atomic_write",
+            lambda *args: (_ for _ in ()).throw(PermissionError("locked")),
+        )
+
+        # 调用 rollback_to_version 应抛出 PermissionError（不吞掉异常）
+        with pytest.raises(PermissionError):
+            manager.rollback_to_version(file_id, v1["id"])
+
+        # 验证版本数量未增加（无备份残留）
+        versions_after = len(db.get_versions(file_id))
+        assert versions_after == versions_before
+
+        # 取消 mock，验证 rollback_to_version 正常工作且创建备份
+        monkeypatch.undo()
+        manager.rollback_to_version(file_id, v1["id"])
+        versions_after_ok = len(db.get_versions(file_id))
+        assert versions_after_ok == versions_before + 1

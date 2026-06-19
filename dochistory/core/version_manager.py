@@ -41,23 +41,28 @@ class VersionManager:
         relative_path = os.path.relpath(file_path, folder_path)
         file_hash = compute_md5(file_path)
 
-        # Find or create file record
+        # 查找文件记录
         file_rec = self._db.find_file(folder_id, relative_path)
+        # 如果文件已存在且哈希未变，跳过版本创建
+        if file_rec is not None and file_rec["file_hash"] == file_hash:
+            return None
+
+        # 先读取快照（可能因文件被锁定而失败）。
+        # 必须在任何数据库写入之前读取，否则 update_file_hash 会提前提交新哈希，
+        # 一旦读取失败，后续相同内容会被永久跳过，导致版本数据丢失。
+        snapshot = self._read_with_retry(file_path)
+        if snapshot is None:
+            return None
+
+        # 读取成功后再写入文件记录
         if file_rec is None:
             file_id = self._db.add_file(folder_id, relative_path, file_hash)
             file_rec = self._db.find_file(folder_id, relative_path)
         else:
-            # Skip if hash unchanged
-            if file_rec["file_hash"] == file_hash:
-                return None
+            # 哈希已变化，更新文件哈希
             self._db.update_file_hash(file_rec["id"], file_hash, os.path.getsize(file_path))
 
         file_id = file_rec["id"]
-
-        # Retry reading file (may be locked by Word)
-        snapshot = self._read_with_retry(file_path)
-        if snapshot is None:
-            return None
 
         compressed = compress_data(snapshot)
         version_number = self._db.get_latest_version_number(file_id) + 1
@@ -117,24 +122,41 @@ class VersionManager:
             return False
         file_path = self._get_full_path(file_rec)
 
-        # Create backup of current on-disk state before overwriting.
-        # Only skip when rolling back to the latest version AND the file
-        # on disk still matches that latest version (no-op rollback).
+        # 1. 在写入前读取备份快照（避免 _atomic_write 失败时残留备份版本）。
+        # 仅在回滚到最新版本且磁盘文件仍与该版本一致时跳过（无操作回滚）。
+        backup_snapshot = None
         if latest and os.path.exists(file_path):
             current_hash = compute_md5(file_path)
             is_noop = latest["id"] == version_id and current_hash == file_rec["file_hash"]
             if not is_noop:
-                self._create_backup_version(file_id, file_path)
+                backup_snapshot = self._read_with_retry(file_path)
 
-        # Restore target version
+        # 2. 获取目标版本数据并解压
         compressed_data = self._db.get_version_data(version_id)
         if compressed_data is None:
             return False
 
         data = decompress_data(compressed_data)
+
+        # 3. 原子写入文件（可能失败，此时无备份残留）
         self._atomic_write(file_path, data)
 
-        # Update file hash
+        # 4. 写入成功后创建备份版本（内联 _create_backup_version 逻辑，
+        #    以确保只有写入成功才会写入备份版本）
+        if backup_snapshot is not None:
+            compressed_backup = compress_data(backup_snapshot)
+            backup_version_number = self._db.get_latest_version_number(file_id) + 1
+            self._db.create_version(
+                file_id=file_id,
+                version_number=backup_version_number,
+                file_size=len(backup_snapshot),
+                data=compressed_backup,
+                note="回退前自动备份",
+                is_auto=True,
+                modified_by=getpass.getuser(),
+            )
+
+        # 5. 更新文件哈希
         new_hash = compute_md5(file_path)
         self._db.update_file_hash(file_id, new_hash, len(data))
 
@@ -296,9 +318,13 @@ class VersionManager:
             if snapshot:
                 data = compress_data(snapshot)
             else:
-                data = b""
+                # 文件不可读时存储压缩后的空数据，
+                # 避免 decompress_data(b"") 在回滚/导出时崩溃
+                data = compress_data(b"")
         else:
-            data = b""
+            # 文件不存在时存储压缩后的空数据，
+            # 避免 decompress_data(b"") 在回滚/导出时崩溃
+            data = compress_data(b"")
         self._db.create_version(
             file_id=file_id,
             version_number=version_number,
